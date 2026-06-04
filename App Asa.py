@@ -25,7 +25,7 @@ def calc_height_from_yplus(yplus, u_tau, density, viscosity):
     return (yplus * viscosity) / (density * u_tau)
 
 # --- App Layout ---
-st.title("🌬️ Fluent TUI Gen (Streamlit Version)")
+st.title("🌬️ Fluent TUI Gen ")
 st.write("Gerador de scripts TUI automáticos para simulações aerodinâmicas.")
 
 col_form, col_output = st.columns([1.1, 1])
