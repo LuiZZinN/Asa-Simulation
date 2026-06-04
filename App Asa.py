@@ -25,7 +25,7 @@ def calc_height_from_yplus(yplus, u_tau, density, viscosity):
     return (yplus * viscosity) / (density * u_tau)
 
 # --- App Layout ---
-st.title("🌬️ Fluent TUI Gen ")
+st.title("🌬️ Fluent TUI Gen (Streamlit Version)")
 st.write("Gerador de scripts TUI automáticos para simulações aerodinâmicas.")
 
 col_form, col_output = st.columns([1.1, 1])
@@ -144,15 +144,22 @@ lines.append("; Cria ou atualiza as propriedades físicas do 'air' (ar)")
 lines.append(f"; Densidade: {density:.4e} kg/m³ | Viscosidade: {viscosity:.4e} kg/m.s")
 lines.append(f"/define/materials/change-create air air yes constant {density:.4e} no no yes constant {viscosity:.4e} no no no")
 
-lines.append("")
 lines.append("; --- 3. CONDIÇÕES DE FRONTEIRA E CINEMÁTICA ---")
+lines.append("; Aplica a Magnitude da velocidade e os componentes do vetor direção.")
 lines.append(f"; Fronteira definida como Inlet: '{b_inlet}'")
-lines.append(f"; Componente U: {vx:.6f} m/s | Componente V: {vy:.6f} m/s")
+
+# Vetor de direção
+dx = math.cos(aoa_rad)
+dy = math.sin(aoa_rad)
+
+lines.append(f"; Velocidade Magnitude: {vel:.6f} m/s")
 
 if geom_type == "2d_airfoil":
-    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} no no yes yes no {vx:.6f} no 0 no {vy:.6f}")
+    lines.append(f"; Vetor Direção -> X (cos): {dx:.6f} | Y (sin): {dy:.6f}")
+    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} magnitude-and-direction no {vel:.6f} no 0 no {dx:.6f} no {dy:.6f}")
 else:
-    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} no no yes yes no {vx:.6f} no 0 no {vy:.6f} no 0")
+    lines.append(f"; Vetor Direção -> X (cos): {dx:.6f} | Y (sin): {dy:.6f} | Z: 0")
+    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} magnitude-and-direction no {vel:.6f} no 0 no {dx:.6f} no {dy:.6f} no 0")
 
 if "3d" in geom_type and symmetry:
     lines.append("")
