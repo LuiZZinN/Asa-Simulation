@@ -24,6 +24,216 @@ def calc_height_from_yplus(yplus, u_tau, density, viscosity):
     if density <= 0 or u_tau <= 0: return 0
     return (yplus * viscosity) / (density * u_tau)
 
+# --- Funções de Script de Malha e Geometria ---
+def generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake):
+    is_2d = (geom_type == '2d_airfoil')
+    if geom_tool == 'spaceclaim':
+        s = f"""# =====================================================================
+# SpaceClaim Python Script (Ansys V19+)
+# Para: {'Perfil 2D Sectionado (C-Grid)' if is_2d else 'Perfil 3D Extrudado (Domínio Contínuo)'}
+# Instruções: No SpaceClaim, abra a aba "File" -> "Scripting" (ou "Design" -> "Scripting" em versões mais novas),
+# cole este código e clique em Run Script.
+# =====================================================================
+
+import math
+
+ClearAll()
+
+# 1. Coordenadas do Perfil Aerodinâmico
+coords_str = \"\"\"{airfoil_coords}\"\"\"
+points = []
+for line in coords_str.strip().split('\\n'):
+    parts = line.split()
+    if len(parts) >= 2:
+        x, y = float(parts[0]), float(parts[1])
+        # Assumindo coords já em metros (ou normalizadas), converte para a unidade base do SC se necessário
+        points.append(Point2D.Create(x, y))
+
+# 2. Criação da Curva do Perfil
+if len(points) > 0:
+    result_curve = SketchNurbs.CreateFrom3DPoints([Point.Create(p.X, p.Y, 0) for p in points])
+
+# 3. Criação do Domínio Externo (C-Grid)
+radius = {domain_radius}
+wake_length = {domain_wake}
+print(f"Desenhando Domínio: Raio={{radius}}m, Esteira={{wake_length}}m")
+
+"""
+        if is_2d:
+            s += """# -- METODOLOGIA 2D ESTRUTURADO (C-GRID COM SEÇÕES) --
+# Adicionando as linhas de corte para possibilitar o Sizing com Bias na malha
+# O script dividirá a face principal criando blocos (topologia estruturada)
+print("No SpaceClaim 2D estruturado, você pode precisar usar as ferramentas 'Split Face' / 'Divide')\\n
+print("Para manter o script genérico e não quebrar em versões diferentes da API, desenhamos as linhas de construção:")
+SketchLine.Create(Point2D.Create(0, radius), Point2D.Create(wake_length, radius))
+SketchLine.Create(Point2D.Create(0, -radius), Point2D.Create(wake_length, -radius))
+SketchLine.Create(Point2D.Create(wake_length, radius), Point2D.Create(wake_length, -radius))
+# Arco semicírcular frontal
+SketchArc.Create(Point2D.Create(0,0), radius, math.pi/2, 3*math.pi/2)
+# Lembre-se de conectar as bordas do perfil às paredes externas com a ferramenta Line para obter as faces da malha blocada.
+"""
+        else:
+            s += """# -- METODOLOGIA 3D (Domínio Contínuo sem secções, resolvido via Inflation) --
+# Perímetro contínuo do domíno fluido
+SketchLine.Create(Point2D.Create(0, radius), Point2D.Create(wake_length, radius))
+SketchLine.Create(Point2D.Create(0, -radius), Point2D.Create(wake_length, -radius))
+SketchLine.Create(Point2D.Create(wake_length, radius), Point2D.Create(wake_length, -radius))
+SketchArc.Create(Point2D.Create(0,0), radius, math.pi/2, 3*math.pi/2)
+
+# Após formar a superfície, subtraia o perfil (Operação Combine/Cut) e use a ferramenta Pull (Extrude) com a Envergadura desejada.
+"""
+        return s
+    
+    elif geom_tool == 'design_modeler':
+        s = f"""// =====================================================================
+// Ansys DesignModeler JScript
+// Para: {'Perfil 2D Sectionado (C-Grid)' if is_2d else 'Perfil 3D Extrudado (Domínio Contínuo)'}
+// Instruções: Salve como .js. No DesignModeler, vá em File -> Run Script.
+// =====================================================================
+
+var coords = \\
+"{airfoil_coords.replace('\\n', '\\\\n')}";
+
+// Função auxiliar para criar Pontos 3D e Curva base no DesignModeler
+function drawDomain() {{
+    var sk1 = agb.GetActiveSketch();
+    if (!sk1) {{
+        agb.Print("Crie um Sketch no plano XY antes de rodar.");
+        return;
+    }}
+
+    var r = {domain_radius};
+    var w = {domain_wake};
+
+"""
+        if is_2d:
+            s += """    // Borda Externa Blocada (C-Grid)
+    agb.Line(sk1, 0, r, w, r);
+    agb.Line(sk1, 0, -r, w, -r);
+    agb.Line(sk1, w, r, w, -r);
+    // Arco
+    agb.ArcCentEndEnd(sk1, 0, 0, 0, r, 0, -r);
+
+    // Nota: O DM JScript para splines (3D Curve) usando matrizes é muito complexo de abstrair sem arquivos externos.
+    // Recomenda-se usar a ferramenta nativa "3D Curve" do DM importando um arquivo .txt com as coordenadas X Y Z.
+    agb.Print("Domínio C-Grid desenhado no Sketch! Agora importe os pontos da asa usando 3D Curve no formato TXT, crie 'Surfaces from Sketches' e faça um 'Face Split' conectando a asa ao domínio.");
+"""
+        else:
+            s += """    // Borda Externa Única
+    agb.Line(sk1, 0, r, w, r);
+    agb.Line(sk1, 0, -r, w, -r);
+    agb.Line(sk1, w, r, w, -r);
+    agb.ArcCentEndEnd(sk1, 0, 0, 0, r, 0, -r);
+
+    agb.Print("Domínio desenhado no Sketch! Importe os pontos com '3D Curve', converta tudo para Superfície (Surface from Sketches/Edges) e subtraia (Boolean Subtract) a asa do domínio. Após isso, dê Extrude para o 3D.");
+"""
+        s += "}\ndrawDomain();\n"
+        return s
+        
+    return ""
+
+def generate_mesh_script(mesh_tool, geom_type, first_cell_height, b_inlet, b_outlet, b_wall, b_sym):
+  is_2d = (geom_type == '2d_airfoil')
+  
+  if mesh_tool == 'ansys_meshing':
+      s = f"""# =====================================================================
+# Ansys Meshing (Mechanical API) Script / Guia de Configuração Automática
+# =====================================================================
+# Como o Ansys Meshing é amplamente visual, execute ou utilize isso
+# como roteiro na ABA SCRIPTING ou via objetos do ACT Console.
+
+first_cell_height = {first_cell_height:.4e} # (m) garantindo Y+ alvo
+
+"""
+      if is_2d:
+          s += """# -- METODOLOGIA 2D: ESTRUTURADO (EDGE SIZING WITH BIAS) --
+print("Configuração recomendada para 2D Estruturado na Árvore de Projeto:")
+
+# Refino do Corpo Principal (Airfoil)
+print("1. Edge Sizing nas linhas superior e inferior do perfil.")
+print("   - Type: Number of Divisions (ex: 150 divisions)")
+print("   - Bias Type: Em direção aos bordos de Ataque (LE) e Fuga (TE)")
+print("   - Bias Factor: ~10 (Ajuste para convergir na malha fina nas pontas)")
+
+# Camada Limite Direta no Domínio C (Cortado)
+print("2. Edge Sizing nas arestas radiais conectando o Perfil às fronteiras (Farfield)")
+print("   - Type: Element Size ou Bias Length")
+print(f"   - Primeira célula (First Edge Size): {first_cell_height:.4e} m")
+print("   - Bias Type: Menor adjacente à parede (Wing-surface)")
+print("   - Growth Rate: 1.1 a 1.2")
+
+# Método de Malha
+print("3. Method -> Face Meshing em todas as faces de fluxo (Mapeado/Mapped).")
+"""
+      else:
+          s += f"""# -- METODOLOGIA 3D: NÃO-ESTRUTURADO (INFLATION) --
+print("Configuração recomendada para 3D com Inflation na Árvore de Projeto:")
+
+print("1. Insert -> Inflation")
+print("   - Geometry: Selecione o Volume de Fluido")
+print("   - Boundary: Selecione as faces que compõem o Perfil/Asa ('{b_wall}')")
+print("   - Inflation Option: First Layer Thickness")
+print("   - First Layer Height: {first_cell_height:.4e} m")
+print("   - Maximum Layers: 15 ~ 25")
+print("   - Growth Rate: 1.15 a 1.2")
+"""
+      s += f"""
+# -- NOMEANDO AS FRONTEIRAS (NAMED SELECTIONS) --
+print("\\nCrie os seguintes Named Selections nos contornos/faces externas:")
+print(" - Inlet: '{b_inlet}'")
+print(" - Outlet: '{b_outlet}'")
+print(" - Parede (Asa): '{b_wall}'")
+"""
+      if "3d" in geom_type and b_sym:
+          s += f"print(\" - Simetria: '{b_sym}'\")\n"
+      return s
+  
+  elif mesh_tool == 'fluent_meshing':
+      s = f"""; =====================================================================
+; Fluent Meshing TUI Script
+; =====================================================================
+; OBS: O Fluent Meshing (Watertight Workflow) é idealizado primariamente
+; para 3D não-estruturados com robusto motor de Prismas/Inflation.
+
+"""
+      if is_2d:
+          s += """; ATENÇÃO: O Fluent Meshing aceita 2D, porém o Surface Meshing e Volume Meshing 
+; nativo TUI funciona exponencialmente melhor se você mapear a placa 2D em 
+; uma Z-Thickness muito fina e extrair o 2D final no solver Fluent padrão.
+
+; No Fluent Solver (pós-malha): /mesh/modify-zones/make-2d
+
+"""
+      s += f"""; 1. Importação da Geometria Limpa
+; Lembre-se de verificar as Unidades e o Tolerances do modelo!
+/file/import/cad "domain.step" millimeter
+
+; 2. Named Selections já devem vir da geometria, caso contrário renomeie via TUI:
+; /boundary/rename-zone old-name {b_wall}
+
+; 3. Configuração do Size Field (Refinamento da Superfície)
+/mesh/size-field/create-sizing-parameters "asas" yes curvature 18 0.001 0.1 
+; Substituir limites Global Min/Max de acordo com o CAD.
+
+; 4. Criação do Scoped Prism (Camada Limite / Inflation)
+; Tipo de Prisma: first-height para garantir o Y+
+/mesh/scoped-prisms/create "camada-asa" 
+/mesh/scoped-prisms/edit "camada-asa" first-height {first_cell_height:.4e} 15 1.2 "constant" "{b_wall}" ()
+
+; 5. Geração e Preenchimento Poly-Hexcore
+/mesh/surface-mesh/create yes
+/mesh/volume-mesh/create poly-hexcore
+
+; 6. Avaliação Qualidade
+/mesh/check-quality
+
+; 7. Escrever malha
+/file/write-mesh "aerodynamics.msh"
+"""
+      return s
+  
+  return ""
+
 # --- App Layout ---
 st.title("🌬️ Fluent TUI Gen (Streamlit Version)")
 st.write("Gerador de scripts TUI automáticos para simulações aerodinâmicas.")
@@ -41,6 +251,35 @@ with col_form:
         geom_type = st.selectbox("Geometria", ["2d_airfoil", "3d_airfoil", "3d_wing"])
         regime = st.radio("Regime", ["steady", "transient"], horizontal=True)
         symmetry = st.checkbox("Malha possui Plano de Simetria") if "3d" in geom_type else False
+
+    show_geom = geom_type in ["2d_airfoil", "3d_airfoil"]
+    if show_geom:
+        with st.container(border=True):
+            st.subheader("📦 Geometria e Malha (Pré-Processamento)")
+            
+            c_g1, c_g2 = st.columns(2)
+            geom_tool = c_g1.selectbox(
+                "Gerador Geometria", 
+                ["none", "spaceclaim", "design_modeler"], 
+                format_func=lambda x: "Não gerar" if x == "none" else ("SpaceClaim (Python)" if x == "spaceclaim" else "DesignModeler (JScript)")
+            )
+            mesh_tool = c_g2.selectbox(
+                "Gerador de Malha", 
+                ["none", "ansys_meshing", "fluent_meshing"], 
+                format_func=lambda x: "Não gerar" if x == "none" else ("Ansys Meshing (Guia/ACT)" if x == "ansys_meshing" else "Fluent Meshing (TUI)")
+            )
+            
+            if geom_tool != "none" or mesh_tool != "none":
+                c_dom1, c_dom2 = st.columns(2)
+                domain_radius = c_dom1.number_input("Raio Domínio 'C' (m)", value=10.0)
+                domain_wake = c_dom2.number_input("Comprimento Esteira (m)", value=20.0)
+                default_coords = "1.00000 0.00000\n0.95000 0.01300\n0.90000 0.02400\n0.80000 0.04300\n0.70000 0.05800\n0.60000 0.06800\n0.50000 0.07500\n0.40000 0.07800\n0.30000 0.07600\n0.20000 0.06800\n0.10000 0.04900\n0.05000 0.03400\n0.00000 0.00000\n0.05000 -0.01800\n0.10000 -0.02600\n0.20000 -0.03300\n0.30000 -0.03500\n0.40000 -0.03300\n0.50000 -0.02900\n0.60000 -0.02400\n0.70000 -0.01800\n0.80000 -0.01200\n0.90000 -0.00600\n0.95000 -0.00300\n1.00000 0.00000"
+                airfoil_coords = st.text_area("Coordenadas do Perfil (X Y)", value=default_coords, height=150)
+            else:
+                domain_radius, domain_wake, airfoil_coords = 10.0, 20.0, ""
+    else:
+        geom_tool, mesh_tool = "none", "none"
+        domain_radius, domain_wake, airfoil_coords = 10.0, 20.0, ""
 
     with st.container(border=True):
         st.subheader("Nomes das Fronteiras (Boundaries)")
@@ -237,5 +476,28 @@ lines.append("; --- FIM DO SCRIPT AUTOMATIZADO ---")
 final_script = "\n".join(lines)
 
 with col_output:
-    st.subheader("📋 Script TUI Gerado")
-    st.code(final_script, language="fluent")
+    st.subheader("📋 Scripts Gerados")
+    
+    active_tabs = ["Fluent TUI"]
+    if geom_tool != "none": active_tabs.append("Geometria")
+    if mesh_tool != "none": active_tabs.append("Malha")
+    
+    tabs = st.tabs(active_tabs)
+    
+    with tabs[0]:
+        st.code(final_script, language="fluent")
+        st.info("Copie este script e cole no console do Fluent (ou use file/read-macro).")
+        
+    if geom_tool != "none":
+        geom_idx = active_tabs.index("Geometria")
+        with tabs[geom_idx]:
+            geom_script = generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake)
+            st.code(geom_script, language="python" if geom_tool == "spaceclaim" else "javascript")
+            st.info("Abra a ferramenta selecionada e rode o script na aba Scripting.")
+            
+    if mesh_tool != "none":
+        mesh_idx = active_tabs.index("Malha")
+        with tabs[mesh_idx]:
+            mesh_script = generate_mesh_script(mesh_tool, geom_type, height_val, b_inlet, b_outlet, b_wall, b_sym if symmetry else None)
+            st.code(mesh_script, language="python" if mesh_tool == "ansys_meshing" else "fluent")
+            st.info("Use como guia ou rode no Fluent Meshing TUI para pre-processar a malha.")
