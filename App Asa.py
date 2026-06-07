@@ -25,8 +25,24 @@ def calc_height_from_yplus(yplus, u_tau, density, viscosity):
     return (yplus * viscosity) / (density * u_tau)
 
 # --- Funções de Script de Malha e Geometria ---
-def generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake):
+def generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake, ref_length):
     is_2d = (geom_type == '2d_airfoil')
+    
+    # Scale coordinates
+    lines_coords = airfoil_coords.strip().split('\n')
+    scaled_lines = []
+    for line in lines_coords:
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                x = float(parts[0]) * ref_length
+                y = float(parts[1]) * ref_length
+                scaled_lines.append(f"{x:.6f} {y:.6f}")
+            except ValueError:
+                pass
+    scaled_coords_sc = "\n".join(scaled_lines)
+    scaled_coords_dm = "\\n".join(scaled_lines)
+
     if geom_tool == 'spaceclaim':
         s = f"""# =====================================================================
 # SpaceClaim Python Script (Ansys V19+)
@@ -39,8 +55,8 @@ import math
 
 ClearAll()
 
-# 1. Coordenadas do Perfil Aerodinâmico
-coords_str = \"\"\"{airfoil_coords}\"\"\"
+# 1. Coordenadas do Perfil Aerodinâmico (Escalonadas para Corda = {ref_length} m)
+coords_str = \"\"\"{scaled_coords_sc}\"\"\"
 points = []
 for line in coords_str.strip().split('\\n'):
     parts = line.split()
@@ -91,8 +107,9 @@ SketchArc.Create(Point2D.Create(0,0), radius, math.pi/2, 3*math.pi/2)
 // Instruções: Salve como .js. No DesignModeler, vá em File -> Run Script.
 // =====================================================================
 
+// Coordenadas (Escalonadas para Corda = {ref_length} m)
 var coords = \\
-"{airfoil_coords.replace('\\n', '\\\\n')}";
+"{scaled_coords_dm}";
 
 // Função auxiliar para criar Pontos 3D e Curva base no DesignModeler
 function drawDomain() {{
@@ -491,7 +508,7 @@ with col_output:
     if geom_tool != "none":
         geom_idx = active_tabs.index("Geometria")
         with tabs[geom_idx]:
-            geom_script = generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake)
+            geom_script = generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake, ref_length)
             st.code(geom_script, language="python" if geom_tool == "spaceclaim" else "javascript")
             st.info("Abra a ferramenta selecionada e rode o script na aba Scripting.")
             
