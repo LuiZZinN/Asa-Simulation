@@ -44,9 +44,10 @@ def generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, do
     scaled_coords_dm = "\\n".join(scaled_lines)
 
     if geom_tool == 'spaceclaim':
-        s = f"""# =====================================================================
+        s = f"""# -*- coding: utf-8 -*-
+# =====================================================================
 # SpaceClaim Python Script (Ansys V19+)
-# Para: {'Perfil 2D Sectionado (C-Grid)' if is_2d else 'Perfil 3D Extrudado (Domínio Contínuo)'}
+# Para: {'Perfil 2D Sectionado (Retangular)' if is_2d else 'Perfil 3D Extrudado (Domínio Contínuo)'}
 # Instruções: No SpaceClaim, abra a aba "File" -> "Scripting" (ou "Design" -> "Scripting" em versões mais novas),
 # cole este código e clique em Run Script.
 # =====================================================================
@@ -67,84 +68,118 @@ for line in coords_str.strip().split('\\n'):
 
 # 2. Criação da Curva do Perfil
 if len(points) > 0:
-    result_curve = SketchNurbs.CreateFrom3DPoints([Point.Create(p.X, p.Y, 0) for p in points])
+    # Limpa ponto duplicado no final se o perfil já for fechado
+    if abs(points[0].X - points[-1].X) < 1e-6 and abs(points[0].Y - points[-1].Y) < 1e-6:
+        points = points[:-1]
+        
+    for i in range(len(points) - 1):
+        SketchLine.Create(points[i], points[i+1])
+    SketchLine.Create(points[-1], points[0])
 
-# 3. Criação do Domínio Externo (C-Grid)
+# 3. Criação do Domínio Externo (Retangular)
 radius = {domain_radius}
 wake_length = {domain_wake}
-print(f"Desenhando Domínio: Raio={{radius}}m, Esteira={{wake_length}}m")
+print("Desenhando Dominio: Raio={{}}m, Esteira={{}}m".format(radius, wake_length))
 
 """
         if is_2d:
-            s += """# -- METODOLOGIA 2D ESTRUTURADO (C-GRID COM SEÇÕES) --
+            s += """# -- METODOLOGIA 2D ESTRUTURADO (DOMÍNIO RETANGULAR COM SEÇÕES) --
 # Adicionando as linhas de corte para possibilitar o Sizing com Bias na malha
 # O script dividirá a face principal criando blocos (topologia estruturada)
-print("No SpaceClaim 2D estruturado, você pode precisar usar as ferramentas 'Split Face' / 'Divide')\\n
-print("Para manter o script genérico e não quebrar em versões diferentes da API, desenhamos as linhas de construção:")
-SketchLine.Create(Point2D.Create(0, radius), Point2D.Create(wake_length, radius))
-SketchLine.Create(Point2D.Create(0, -radius), Point2D.Create(wake_length, -radius))
+print("No SpaceClaim 2D estruturado, o script desenha os cortes em H-Grid")
+SketchLine.Create(Point2D.Create(-radius, radius), Point2D.Create(wake_length, radius))
+SketchLine.Create(Point2D.Create(-radius, -radius), Point2D.Create(wake_length, -radius))
 SketchLine.Create(Point2D.Create(wake_length, radius), Point2D.Create(wake_length, -radius))
-# Arco semicírcular frontal
-SketchArc.Create(Point2D.Create(0,0), radius, math.pi/2, 3*math.pi/2)
-# Lembre-se de conectar as bordas do perfil às paredes externas com a ferramenta Line para obter as faces da malha blocada.
+# Reta de entrada frontal
+SketchLine.Create(Point2D.Create(-radius, radius), Point2D.Create(-radius, -radius))
+
+le_point = min(points, key=lambda p: p.X)
+te_point = max(points, key=lambda p: p.X)
+# Linhas de seccionamento H-Grid (Cortes da Asa para as Bordas)
+SketchLine.Create(le_point, Point2D.Create(-radius, le_point.Y))
+SketchLine.Create(le_point, Point2D.Create(le_point.X, radius))
+SketchLine.Create(le_point, Point2D.Create(le_point.X, -radius))
+SketchLine.Create(te_point, Point2D.Create(wake_length, te_point.Y))
+SketchLine.Create(te_point, Point2D.Create(te_point.X, radius))
+SketchLine.Create(te_point, Point2D.Create(te_point.X, -radius))
+
+print("Tentando criar grupos (Named Selections) automaticamente...")
+try:
+    # Alterna para modo 3D (Solid) para gerar as faces e edges
+    try:
+        ViewHelper.SetViewMode(InteractionMode.Solid, None)
+    except:
+        ViewHelper.SetViewMode(InteractionMode.Solid)
+        
+    part = Window.ActiveWindow.Document.MainPart
+    inlet_edges = []
+    outlet_edges = []
+    radiais_edges = []
+    perfil_edges = []
+    
+    for e in part.Edges:
+        box = e.BoundingBox
+        if box.Min.X <= -radius + 1e-4 or box.Max.Y >= radius - 1e-4 or box.Min.Y <= -radius + 1e-4:
+            inlet_edges.append(e)
+        elif box.Max.X >= wake_length - 1e-4:
+            outlet_edges.append(e)
+        elif abs(box.Min.X - box.Max.X) < 1e-5 or abs(box.Min.Y - box.Max.Y) < 1e-5:
+            radiais_edges.append(e)
+        else:
+            perfil_edges.append(e)
+            
+    if inlet_edges: Group.Create(Window.ActiveWindow.Document, "{b_inlet}", Selection.Create(inlet_edges))
+    if outlet_edges: Group.Create(Window.ActiveWindow.Document, "{b_outlet}", Selection.Create(outlet_edges))
+    if radiais_edges: Group.Create(Window.ActiveWindow.Document, "Radiais", Selection.Create(radiais_edges))
+    if perfil_edges: Group.Create(Window.ActiveWindow.Document, "{b_wall}", Selection.Create(perfil_edges))
+    print("Grupos nomeados com sucesso!")
+except Exception as inst:
+    print("Nao foi possivel criar grupos automaticamente:", inst)
 """
         else:
             s += """# -- METODOLOGIA 3D (Domínio Contínuo sem secções, resolvido via Inflation) --
-# Perímetro contínuo do domíno fluido
-SketchLine.Create(Point2D.Create(0, radius), Point2D.Create(wake_length, radius))
-SketchLine.Create(Point2D.Create(0, -radius), Point2D.Create(wake_length, -radius))
+# Perímetro contínuo do domíno fluido retangular
+SketchLine.Create(Point2D.Create(-radius, radius), Point2D.Create(wake_length, radius))
+SketchLine.Create(Point2D.Create(-radius, -radius), Point2D.Create(wake_length, -radius))
 SketchLine.Create(Point2D.Create(wake_length, radius), Point2D.Create(wake_length, -radius))
-SketchArc.Create(Point2D.Create(0,0), radius, math.pi/2, 3*math.pi/2)
+SketchLine.Create(Point2D.Create(-radius, radius), Point2D.Create(-radius, -radius))
 
 # Após formar a superfície, subtraia o perfil (Operação Combine/Cut) e use a ferramenta Pull (Extrude) com a Envergadura desejada.
+"""
+        s += """
+# Alterna para o modo Sólido (3D) para preencher a face.
+try:
+    ViewHelper.SetViewMode(InteractionMode.Solid, None)
+except:
+    try:
+        ViewHelper.SetViewMode(InteractionMode.Solid)
+    except:
+        print("Não foi possível alternar para o modo Solid automaticamente. Vá em 'Design' -> '3D Mode' para transformar os contornos em superfícies.")
 """
         return s
     
     elif geom_tool == 'design_modeler':
         s = f"""// =====================================================================
 // Ansys DesignModeler JScript
-// Para: {'Perfil 2D Sectionado (C-Grid)' if is_2d else 'Perfil 3D Extrudado (Domínio Contínuo)'}
+// Para: {'Perfil 2D Sectionado (Retangular)' if is_2d else 'Perfil 3D Extrudado (Domínio Contínuo)'}
 // Instruções: Salve como .js. No DesignModeler, vá em File -> Run Script.
 // =====================================================================
 
 // Coordenadas (Escalonadas para Corda = {ref_length} m)
-var coords = \\
-"{scaled_coords_dm}";
+var coords = "{scaled_coords_dm}";
 
-// Função auxiliar para criar Pontos 3D e Curva base no DesignModeler
-function drawDomain() {{
-    var sk1 = agb.GetActiveSketch();
-    if (!sk1) {{
-        agb.Print("Crie um Sketch no plano XY antes de rodar.");
-        return;
-    }}
-
-    var r = {domain_radius};
-    var w = {domain_wake};
-
+// O script JScript para o DesignModeler é restrito. 
+// Siga as instruções abaixo usando a interface gráfica:
+agb.Print("================ INSTRUÇÕES DESIGNMODELER ================");
+agb.Print("Para gerar o perfil e o domínio fluidodinâmico de forma robusta:");
+agb.Print("1. Copie as coordenadas escalonadas do código (acima) e salve num arquivo 'perfil.txt'.");
+agb.Print("2. No DM, vá em 'Create' -> '3D Curve' e aponte para o 'perfil.txt'.");
+agb.Print("3. Transforme a curva num corpo de superfície com 'Concept' -> 'Surfaces from Edges'.");
+agb.Print("4. Crie um Sketch no plano XY e desenhe as linhas do Domínio Retangular (raio/topo {domain_radius}m, esteira {domain_wake}m).");
+agb.Print("5. Forme uma superfície do Domínio ('Concept' -> 'Surfaces from Sketches').");
+agb.Print("6. Subtraia a asa do domínio ('Create' -> 'Boolean' ou 'Tools' -> 'Face Split').");
+agb.Print("=====================================================");
 """
-        if is_2d:
-            s += """    // Borda Externa Blocada (C-Grid)
-    agb.Line(sk1, 0, r, w, r);
-    agb.Line(sk1, 0, -r, w, -r);
-    agb.Line(sk1, w, r, w, -r);
-    // Arco
-    agb.ArcCentEndEnd(sk1, 0, 0, 0, r, 0, -r);
-
-    // Nota: O DM JScript para splines (3D Curve) usando matrizes é muito complexo de abstrair sem arquivos externos.
-    // Recomenda-se usar a ferramenta nativa "3D Curve" do DM importando um arquivo .txt com as coordenadas X Y Z.
-    agb.Print("Domínio C-Grid desenhado no Sketch! Agora importe os pontos da asa usando 3D Curve no formato TXT, crie 'Surfaces from Sketches' e faça um 'Face Split' conectando a asa ao domínio.");
-"""
-        else:
-            s += """    // Borda Externa Única
-    agb.Line(sk1, 0, r, w, r);
-    agb.Line(sk1, 0, -r, w, -r);
-    agb.Line(sk1, w, r, w, -r);
-    agb.ArcCentEndEnd(sk1, 0, 0, 0, r, 0, -r);
-
-    agb.Print("Domínio desenhado no Sketch! Importe os pontos com '3D Curve', converta tudo para Superfície (Surface from Sketches/Edges) e subtraia (Boolean Subtract) a asa do domínio. Após isso, dê Extrude para o 3D.");
-"""
-        s += "}\ndrawDomain();\n"
         return s
         
     return ""
@@ -153,56 +188,117 @@ def generate_mesh_script(mesh_tool, geom_type, first_cell_height, b_inlet, b_out
   is_2d = (geom_type == '2d_airfoil')
   
   if mesh_tool == 'ansys_meshing':
-      s = f"""# =====================================================================
-# Ansys Meshing (Mechanical API) Script / Guia de Configuração Automática
+      s = f"""# -*- coding: utf-8 -*-
 # =====================================================================
-# Como o Ansys Meshing é amplamente visual, execute ou utilize isso
-# como roteiro na ABA SCRIPTING ou via objetos do ACT Console.
+# Ansys Meshing (Mechanical API) Script / Configuração Automática
+# =====================================================================
+import clr
+try:
+    clr.AddReference("System.Windows.Forms")
+    import System.Windows.Forms as WinForms
+    HAS_WINFORMS = True
+except:
+    HAS_WINFORMS = False
+
+def msg_box(texto, titulo="Ansys Meshing Script"):
+    if HAS_WINFORMS:
+        WinForms.MessageBox.Show(texto, titulo)
+    else:
+        try:
+            ExtAPI.Log.WriteMessage(texto)
+        except:
+            print(texto)
 
 first_cell_height = {first_cell_height:.4e} # (m) garantindo Y+ alvo
 
+try:
+    mesh = ExtAPI.DataModel.Project.Model.Mesh
 """
       if is_2d:
-          s += """# -- METODOLOGIA 2D: ESTRUTURADO (EDGE SIZING WITH BIAS) --
-print("Configuração recomendada para 2D Estruturado na Árvore de Projeto:")
+          s += f"""
+    # Funcoes auxiliares para localizar Named Selections vindas do SpaceClaim
+    def get_ns(name):
+        try:
+            for ns in mesh.Parent.NamedSelections.Children:
+                if ns.Name == name: return ns
+        except: pass
+        return None
 
-# Refino do Corpo Principal (Airfoil)
-print("1. Edge Sizing nas linhas superior e inferior do perfil.")
-print("   - Type: Number of Divisions (ex: 150 divisions)")
-print("   - Bias Type: Em direção aos bordos de Ataque (LE) e Fuga (TE)")
-print("   - Bias Factor: ~10 (Ajuste para convergir na malha fina nas pontas)")
+    # Mapeamento e Sizing para 2D
+    sz_perfil = mesh.AddSizing()
+    sz_perfil.Name = "1. Airfoil Sizing (Extradador e Intrador)"
+    ns_perfil = get_ns("{b_wall}")
+    if ns_perfil: sz_perfil.Location = ns_perfil
+    try:
+        sz_perfil.Type = Ansys.Mechanical.DataModel.Enums.SizingType.NumberOfDivisions
+        sz_perfil.NumberOfDivisions = 150
+        sz_perfil.BiasOption = Ansys.Mechanical.DataModel.Enums.BiasOptionType.BiasFactor
+        sz_perfil.BiasFactor = 50.0
+    except:
+        pass
+    
+    sz_radiais = mesh.AddSizing()
+    sz_radiais.Name = "2. Farfield/Radias Sizing (Arestas de Corte)"
+    ns_radiais = get_ns("Radiais")
+    if ns_radiais: sz_radiais.Location = ns_radiais
+    try:
+        sz_radiais.Type = Ansys.Mechanical.DataModel.Enums.SizingType.NumberOfDivisions
+        sz_radiais.NumberOfDivisions = 80
+        sz_radiais.BiasOption = Ansys.Mechanical.DataModel.Enums.BiasOptionType.BiasFactor
+        sz_radiais.BiasFactor = 100.0 # Ajuste para Y+
+    except:
+        pass
+    
+    fm = mesh.AddFaceMeshing()
+    fm.Name = "3. Face Meshing (Selecionar a face do dominio principal)"
 
-# Camada Limite Direta no Domínio C (Cortado)
-print("2. Edge Sizing nas arestas radiais conectando o Perfil às fronteiras (Farfield)")
-print("   - Type: Element Size ou Bias Length")
-print(f"   - Primeira célula (First Edge Size): {first_cell_height:.4e} m")
-print("   - Bias Type: Menor adjacente à parede (Wing-surface)")
-print("   - Growth Rate: 1.1 a 1.2")
-
-# Método de Malha
-print("3. Method -> Face Meshing em todas as faces de fluxo (Mapeado/Mapped).")
+    texto = (
+        "Os itens de Malha foram configurados na arvore! \\n\\n"
+        "==== INSTRUCOES PARA GEOMETRIAS ====\\n"
+        "1. Os Named Selections ('{b_inlet}', '{b_outlet}', '{b_wall}', 'Radiais') vieram do SpaceClaim.\\n"
+        "2. Airfoil Sizing: Foi configurado para 150 divisoes com Bias Factor de 50. (Ajuste o comportamento do Bias.\\n"
+        "3. Farfield/Radiais Sizing: Foi configurado para 80 divisoes. \\n"
+        "   -> IMPORTANTE: Calcule o Bias Factor ou ajuste de forma que o tamanho do 1 elemento seja: {first_cell_height:.4e} m.\\n"
+        "4. Face Meshing: Selecione a face principal 2D para Mapped Meshing.\\n"
+    )
+    msg_box(texto)
 """
       else:
-          s += f"""# -- METODOLOGIA 3D: NÃO-ESTRUTURADO (INFLATION) --
-print("Configuração recomendada para 3D com Inflation na Árvore de Projeto:")
-
-print("1. Insert -> Inflation")
-print("   - Geometry: Selecione o Volume de Fluido")
-print("   - Boundary: Selecione as faces que compõem o Perfil/Asa ('{b_wall}')")
-print("   - Inflation Option: First Layer Thickness")
-print("   - First Layer Height: {first_cell_height:.4e} m")
-print("   - Maximum Layers: 15 ~ 25")
-print("   - Growth Rate: 1.15 a 1.2")
+          s += f"""
+    # Named Selections 3D
+    ns_in = mesh.Parent.AddNamedSelection()
+    ns_in.Name = "{b_inlet} (Faces de entrada)"
+    ns_out = mesh.Parent.AddNamedSelection()
+    ns_out.Name = "{b_outlet} (Faces de saida)"
+    ns_win = mesh.Parent.AddNamedSelection()
+    ns_win.Name = "{b_wall} (Faces do perfil/asa)"
 """
-      s += f"""
-# -- NOMEANDO AS FRONTEIRAS (NAMED SELECTIONS) --
-print("\\nCrie os seguintes Named Selections nos contornos/faces externas:")
-print(" - Inlet: '{b_inlet}'")
-print(" - Outlet: '{b_outlet}'")
-print(" - Parede (Asa): '{b_wall}'")
+          if "3d" in geom_type and b_sym:
+              s += f"""    ns_sym = mesh.Parent.AddNamedSelection()
+    ns_sym.Name = "{b_sym} (Plano de simetria)"
 """
-      if "3d" in geom_type and b_sym:
-          s += f"print(\" - Simetria: '{b_sym}'\")\n"
+          s += f"""
+    # Inflation para 3D
+    inf = mesh.AddInflation()
+    inf.Name = "1. Inflation da Camada Limite"
+    
+    sz = mesh.AddSizing()
+    sz.Name = "2. Sizing de Refinamento (Superficie ou Corpo)"
+    
+    texto = (
+        "Os itens de malha e Named Selections foram criados na arvore! \\n\\n"
+        "Agora atribua as geometrias correspondentes:\\n"
+        "1. Named Selections: Selecione as faces para cada contorno.\\n"
+        "2. Inflation: Selecione Volume fluido (Geometry) e Faces da Asa (Boundary).\\n"
+        "   -> (First Layer Height: {first_cell_height:.4e} m)\\n"
+        "3. Sizing: Refine o dominio se necessario.\\n"
+    )
+    msg_box(texto)
+"""
+      s += """
+except Exception as e:
+    msg_box("Erro ao gerar arvore de malha (execute na aba Mechanical): " + str(e))
+"""
       return s
   
   elif mesh_tool == 'fluent_meshing':
@@ -288,7 +384,7 @@ with col_form:
             
             if geom_tool != "none" or mesh_tool != "none":
                 c_dom1, c_dom2 = st.columns(2)
-                domain_radius = c_dom1.number_input("Raio Domínio 'C' (m)", value=10.0)
+                domain_radius = c_dom1.number_input("Dist. Entrada / Topo (m)", value=10.0)
                 domain_wake = c_dom2.number_input("Comprimento Esteira (m)", value=20.0)
                 default_coords = "1.00000 0.00000\n0.95000 0.01300\n0.90000 0.02400\n0.80000 0.04300\n0.70000 0.05800\n0.60000 0.06800\n0.50000 0.07500\n0.40000 0.07800\n0.30000 0.07600\n0.20000 0.06800\n0.10000 0.04900\n0.05000 0.03400\n0.00000 0.00000\n0.05000 -0.01800\n0.10000 -0.02600\n0.20000 -0.03300\n0.30000 -0.03500\n0.40000 -0.03300\n0.50000 -0.02900\n0.60000 -0.02400\n0.70000 -0.01800\n0.80000 -0.01200\n0.90000 -0.00600\n0.95000 -0.00300\n1.00000 0.00000"
                 airfoil_coords = st.text_area("Coordenadas do Perfil (X Y)", value=default_coords, height=150)
