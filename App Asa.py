@@ -506,12 +506,21 @@ dy = math.sin(aoa_rad)
 
 lines.append(f"; Velocidade Magnitude: {vel:.6f} m/s")
 
+turb_suffix = ""
+if turb_model != "spalart-allmaras":
+    turb_suffix = " no 5 no 10"
+    lines.append(f"; ATENÇÃO: Foi adicionado '{turb_suffix}' no final do comando de inlet para a turbulência (5% intensidade, 10 razão de visc).")
+    lines.append("; Dependendo da sua versão do Fluent, a sequência de 'yes'/'no' para os perfis de turbulência pode mudar.")
+    lines.append("; Caso o script trave perguntando 'Turbulent Specification Method', ajuste a sequência final da linha abaixo.")
+else:
+    turb_suffix = " no 10"
+
 if geom_type == "2d_airfoil":
     lines.append(f"; Vetor Direção -> X (cos): {dx:.6f} | Y (sin): {dy:.6f}")
-    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} magnitude-and-direction no {vel:.6f} no 0 no {dx:.6f} no {dy:.6f}")
+    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} magnitude-and-direction no {vel:.6f} no 0 no {dx:.6f} no {dy:.6f}{turb_suffix}")
 else:
     lines.append(f"; Vetor Direção -> X (cos): {dx:.6f} | Y (sin): {dy:.6f} | Z: 0")
-    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} magnitude-and-direction no {vel:.6f} no 0 no {dx:.6f} no {dy:.6f} no 0")
+    lines.append(f"/define/boundary-conditions/velocity-inlet {b_inlet} magnitude-and-direction no {vel:.6f} no 0 no {dx:.6f} no {dy:.6f} no 0{turb_suffix}")
 
 if "3d" in geom_type and symmetry:
     lines.append("")
@@ -598,13 +607,16 @@ with col_output:
     tabs = st.tabs(active_tabs)
     
     with tabs[0]:
+        st.download_button(label="Baixar Script (.jou)", data=final_script, file_name="solver_setup.jou", mime="text/plain")
         st.code(final_script, language="fluent")
-        st.info("Copie este script e cole no console do Fluent (ou use file/read-macro).")
+        st.info("Baixe o .jou e leia no Fluent (file/read-macro) ou copie e cole no console.")
         
     if geom_tool != "none":
         geom_idx = active_tabs.index("Geometria")
         with tabs[geom_idx]:
             geom_script = generate_geom_script(geom_tool, geom_type, airfoil_coords, domain_radius, domain_wake, ref_length)
+            ext = ".py" if geom_tool == "spaceclaim" else ".js"
+            st.download_button(label=f"Baixar Script ({ext})", data=geom_script, file_name=f"geom_setup{ext}", mime="text/plain")
             st.code(geom_script, language="python" if geom_tool == "spaceclaim" else "javascript")
             st.info("Abra a ferramenta selecionada e rode o script na aba Scripting.")
             
@@ -612,5 +624,7 @@ with col_output:
         mesh_idx = active_tabs.index("Malha")
         with tabs[mesh_idx]:
             mesh_script = generate_mesh_script(mesh_tool, geom_type, height_val, b_inlet, b_outlet, b_wall, b_sym if symmetry else None)
+            ext = ".py" if mesh_tool == "ansys_meshing" else ".jou"
+            st.download_button(label=f"Baixar Script ({ext})", data=mesh_script, file_name=f"mesh_setup{ext}", mime="text/plain")
             st.code(mesh_script, language="python" if mesh_tool == "ansys_meshing" else "fluent")
             st.info("Use como guia ou rode no Fluent Meshing TUI para pre-processar a malha.")
