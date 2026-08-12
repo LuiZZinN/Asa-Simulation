@@ -365,34 +365,34 @@ with col_form:
         regime = st.radio("Regime", ["steady", "transient"], horizontal=True)
         symmetry = st.checkbox("Malha possui Plano de Simetria") if "3d" in geom_type else False
 
-    show_geom = geom_type in ["2d_airfoil", "3d_airfoil"]
-    if show_geom:
-        with st.container(border=True):
-            st.subheader("📦 Geometria e Malha (Pré-Processamento)")
-            
-            c_g1, c_g2 = st.columns(2)
+    with st.container(border=True):
+        st.subheader("📦 Geometria e Malha (Pré-Processamento)")
+        
+        c_g1, c_g2 = st.columns(2)
+        if geom_type != '3d_wing':
             geom_tool = c_g1.selectbox(
                 "Gerador Geometria", 
                 ["none", "spaceclaim", "design_modeler"], 
                 format_func=lambda x: "Não gerar" if x == "none" else ("SpaceClaim (Python)" if x == "spaceclaim" else "DesignModeler (JScript)")
             )
-            mesh_tool = c_g2.selectbox(
-                "Gerador de Malha", 
-                ["none", "ansys_meshing", "fluent_meshing"], 
-                format_func=lambda x: "Não gerar" if x == "none" else ("Ansys Meshing (Guia/ACT)" if x == "ansys_meshing" else "Fluent Meshing (TUI)")
-            )
-            
-            if geom_tool != "none" or mesh_tool != "none":
-                c_dom1, c_dom2 = st.columns(2)
-                domain_radius = c_dom1.number_input("Dist. Entrada / Topo (m)", value=10.0)
-                domain_wake = c_dom2.number_input("Comprimento Esteira (m)", value=20.0)
-                default_coords = "1.00000 0.00000\n0.95000 0.01300\n0.90000 0.02400\n0.80000 0.04300\n0.70000 0.05800\n0.60000 0.06800\n0.50000 0.07500\n0.40000 0.07800\n0.30000 0.07600\n0.20000 0.06800\n0.10000 0.04900\n0.05000 0.03400\n0.00000 0.00000\n0.05000 -0.01800\n0.10000 -0.02600\n0.20000 -0.03300\n0.30000 -0.03500\n0.40000 -0.03300\n0.50000 -0.02900\n0.60000 -0.02400\n0.70000 -0.01800\n0.80000 -0.01200\n0.90000 -0.00600\n0.95000 -0.00300\n1.00000 0.00000"
-                airfoil_coords = st.text_area("Coordenadas do Perfil (X Y)", value=default_coords, height=150)
-            else:
-                domain_radius, domain_wake, airfoil_coords = 10.0, 20.0, ""
-    else:
-        geom_tool, mesh_tool = "none", "none"
-        domain_radius, domain_wake, airfoil_coords = 10.0, 20.0, ""
+        else:
+            geom_tool = "none"
+
+        mesh_options = ["none", "ansys_meshing", "fluent_meshing"] if geom_type != '3d_wing' else ["none", "fluent_meshing"]
+        mesh_tool = c_g2.selectbox(
+            "Gerador de Malha", 
+            mesh_options, 
+            format_func=lambda x: "Não gerar" if x == "none" else ("Ansys Meshing (Guia/ACT)" if x == "ansys_meshing" else "Fluent Meshing (TUI)")
+        )
+        
+        if geom_type != '3d_wing' and (geom_tool != "none" or mesh_tool != "none"):
+            c_dom1, c_dom2 = st.columns(2)
+            domain_radius = c_dom1.number_input("Dist. Entrada / Topo (m)", value=10.0)
+            domain_wake = c_dom2.number_input("Comprimento Esteira (m)", value=20.0)
+            default_coords = "1.00000 0.00000\n0.95000 0.01300\n0.90000 0.02400\n0.80000 0.04300\n0.70000 0.05800\n0.60000 0.06800\n0.50000 0.07500\n0.40000 0.07800\n0.30000 0.07600\n0.20000 0.06800\n0.10000 0.04900\n0.05000 0.03400\n0.00000 0.00000\n0.05000 -0.01800\n0.10000 -0.02600\n0.20000 -0.03300\n0.30000 -0.03500\n0.40000 -0.03300\n0.50000 -0.02900\n0.60000 -0.02400\n0.70000 -0.01800\n0.80000 -0.01200\n0.90000 -0.00600\n0.95000 -0.00300\n1.00000 0.00000"
+            airfoil_coords = st.text_area("Coordenadas do Perfil (X Y)", value=default_coords, height=150)
+        else:
+            domain_radius, domain_wake, airfoil_coords = 10.0, 20.0, ""
 
     with st.container(border=True):
         st.subheader("Nomes das Fronteiras (Boundaries)")
